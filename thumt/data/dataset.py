@@ -8,8 +8,8 @@ from __future__ import print_function
 import math
 import operator
 
-import numpy as np
 import tensorflow as tf
+import thumt.utils.distribute as distribute
 
 
 def batch_examples(example, batch_size, max_length, mantissa_bits,
@@ -95,6 +95,10 @@ def get_training_input(filenames, params):
         tgt_dataset = tf.data.TextLineDataset(filenames[1])
 
         dataset = tf.data.Dataset.zip((src_dataset, tgt_dataset))
+
+        if distribute.is_distributed_training_mode():
+            dataset = dataset.shard(distribute.size(), distribute.rank())
+
         dataset = dataset.shuffle(params.buffer_size)
         dataset = dataset.repeat()
 
@@ -146,10 +150,9 @@ def get_training_input(filenames, params):
         features["target"] = tgt_table.lookup(features["target"])
 
         # Batching
-        shard_multiplier = len(params.device_list) * params.update_cycle
         features = batch_examples(features, params.batch_size,
                                   params.max_length, params.mantissa_bits,
-                                  shard_multiplier=shard_multiplier,
+                                  shard_multiplier=len(params.device_list),
                                   length_multiplier=params.length_multiplier,
                                   constant=params.constant_batch_size,
                                   num_threads=params.num_threads)
@@ -243,7 +246,7 @@ def get_evaluation_input(inputs, params):
         )
 
         dataset = dataset.padded_batch(
-            params.eval_batch_size,
+            params.eval_batch_size * len(params.device_list),
             {
                 "source": [tf.Dimension(None)],
                 "source_length": [],
@@ -359,7 +362,7 @@ def get_relevance_input(inputs, outputs, params):
 
     # Split string
     dataset_o = dataset_o.map(lambda x: tf.string_split([x]).values,
-                          num_parallel_calls=params.num_threads)
+                              num_parallel_calls=params.num_threads)
 
     # Append <eos>
     dataset_o = dataset_o.map(
